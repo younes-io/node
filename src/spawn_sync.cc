@@ -159,12 +159,14 @@ class SyncProcessRunner {
   void TryInitializeAndRunLoop(Local<Value> options);
   void CloseHandlesAndDeleteLoop();
 
-  void OnExit(int64_t exit_status, int term_signal);
-  void OnKillTimerTimeout(int status);
+  void CloseStdioPipes();
+  void CloseKillTimer();
 
   void Kill();
-  void StopKillTimer();
   void IncrementBufferSizeAndCheckOverflow(ssize_t length);
+
+  void OnExit(int64_t exit_status, int term_signal);
+  void OnKillTimerTimeout(int status);
 
   int GetError();
   void SetError(int error);
@@ -203,7 +205,8 @@ class SyncProcessRunner {
 
   uint32_t stdio_count_;
   uv_stdio_container_t* uv_stdio_containers_;
-  SyncProcessStdioPipe** pipes_;
+  SyncProcessStdioPipe** stdio_pipes_;
+  bool stdio_pipes_initialized_;
 
   uv_process_options_t uv_process_options_;
   char* file_buffer_;
@@ -559,7 +562,8 @@ SyncProcessRunner::SyncProcessRunner():
 
   stdio_count_(0),
   uv_stdio_containers_(NULL),
-  pipes_(NULL),
+  stdio_pipes_(NULL),
+  stdio_pipes_initialized_(false),
 
   uv_process_options_(),
   file_buffer_(NULL),
@@ -588,14 +592,14 @@ SyncProcessRunner::SyncProcessRunner():
 SyncProcessRunner::~SyncProcessRunner() {
   assert(lifecycle_ == kHandlesClosed);
 
-  if (pipes_ != NULL) {
+  if (stdio_pipes_ != NULL) {
     for (size_t i = 0; i < stdio_count_; i++) {
-      if (pipes_[i] != NULL)
-        delete pipes_[i];
+      if (stdio_pipes_[i] != NULL)
+        delete stdio_pipes_[i];
     }
   }
 
-  delete[] pipes_;
+  delete[] stdio_pipes_;
   delete[] file_buffer_;
   delete[] args_buffer_;
   delete[] cwd_buffer_;
@@ -660,7 +664,7 @@ void SyncProcessRunner::TryInitializeAndRunLoop(Local<Value> options) {
   uv_process_.data = this;
 
   for (uint32_t i = 0; i < stdio_count_; i++) {
-    SyncProcessStdioPipe* h = pipes_[i];
+    SyncProcessStdioPipe* h = stdio_pipes_[i];
     if (h != NULL) {
       r = h->Start();
       if (r < 0)
@@ -680,23 +684,11 @@ void SyncProcessRunner::TryInitializeAndRunLoop(Local<Value> options) {
 
 void SyncProcessRunner::CloseHandlesAndDeleteLoop() {
   assert(lifecycle_ < kHandlesClosed);
-  lifecycle_ = kHandlesClosed;
-
-  if (pipes_ != NULL) {
-    assert(uv_loop_ != NULL);
-    for (uint32_t i = 0; i < stdio_count_; i++) {
-      if (pipes_[i] != NULL)
-        pipes_[i]->Close();
-    }
-  }
-
-  if (kill_timer_initialized_) {
-    uv_handle_t* uv_timer_handle = reinterpret_cast<uv_handle_t*>(&uv_timer_);
-    uv_ref(uv_timer_handle);
-    uv_close(uv_timer_handle, KillTimerCloseCallback);
-  }
 
   if (uv_loop_ != NULL) {
+    CloseStdioPipes();
+    CloseKillTimer();
+
     // Give closing watchers a chance to finish closing and get their close
     // callbacks called.
     int r = uv_run(uv_loop_, UV_RUN_DEFAULT);
@@ -704,7 +696,87 @@ void SyncProcessRunner::CloseHandlesAndDeleteLoop() {
       abort();
 
     uv_loop_delete(uv_loop_);
+
+  } else {
+    // If the loop doesn't exist, neither should any pipes or timers.
+    assert(!stdio_pipes_initialized_);
+    assert(!kill_timer_initialized_);
   }
+
+  lifecycle_ = kHandlesClosed;
+}
+
+
+void SyncProcessRunner::CloseStdioPipes() {
+  assert(lifecycle_ < kHandlesClosed);
+
+  if (stdio_pipes_initialized_) {
+    assert(stdio_pipes_ != NULL);
+    assert(uv_loop_ != NULL);
+
+    for (uint32_t i = 0; i < stdio_count_; i++) {
+      if (stdio_pipes_[i] != NULL)
+        stdio_pipes_[i]->Close();
+    }
+
+    stdio_pipes_initialized_ = false;
+  }
+}
+
+
+void SyncProcessRunner::CloseKillTimer() {
+  assert(lifecycle_ < kHandlesClosed);
+
+  if (kill_timer_initialized_) {
+    assert(timeout_ > 0);
+    assert(uv_loop_ != NULL);
+
+    uv_handle_t* uv_timer_handle = reinterpret_cast<uv_handle_t*>(&uv_timer_);
+    uv_ref(uv_timer_handle);
+    uv_close(uv_timer_handle, KillTimerCloseCallback);
+
+    kill_timer_initialized_ = false;
+  }
+}
+
+
+void SyncProcessRunner::Kill() {
+  // Only attempt to kill once.
+  if (killed_)
+    return;
+  killed_ = true;
+
+  // We might get here even if the process we spawned has already exited. This
+  // could happen when our child process spawned another process which
+  // inherited (one of) the stdio pipes. In this case we won't attempt to send
+  // a signal to the process, however we will still close our end of the stdio
+  // pipes so this situation won't make us hang.
+  if (exit_status_ < 0) {
+    int r = uv_process_kill(&uv_process_, kill_signal_);
+
+    // If uv_kill failed with an error that isn't ESRCH, the user probably
+    // specified an invalid or unsupported signal. Signal this to the user as
+    // and error and kill the process with SIGKILL instead.
+    if (r < 0 && r != UV_ESRCH) {
+      SetError(r);
+
+      r = uv_process_kill(&uv_process_, kill_signal_);
+      assert(r >= 0 || r == UV_ESRCH);
+    }
+  }
+
+  // Close all stdio pipes.
+  CloseStdioPipes();
+
+  // Stop the timeout timer immediately.
+  CloseKillTimer();
+}
+
+
+void SyncProcessRunner::IncrementBufferSizeAndCheckOverflow(ssize_t length) {
+  buffered_output_size_ += length;
+  if (max_buffer_ > 0 && buffered_output_size_ > max_buffer_)
+    Kill();
 }
 
 
@@ -714,9 +786,6 @@ void SyncProcessRunner::OnExit(int64_t exit_status, int term_signal) {
 
   exit_status_ = exit_status;
   term_signal_ = term_signal;
-
-  // Stop the timeout timer if it is running.
-  StopKillTimer();
 }
 
 
@@ -724,47 +793,6 @@ void SyncProcessRunner::OnKillTimerTimeout(int status) {
   assert(status == 0);
   SetError(UV_ETIMEDOUT);
   Kill();
-}
-
-
-void SyncProcessRunner::Kill() {
-  int r;
-
-  // Only attempt to kill once.
-  if (killed_)
-    return;
-  killed_ = true;
-
-  r = uv_process_kill(&uv_process_, kill_signal_);
-
-  // If uv_kill failed with an error that isn't ESRCH, the user probably
-  // specified an invalid or unsupported signal. Signal this to the user as
-  // and error and kill the process with SIGKILL instead.
-  if (r < 0 && r != UV_ESRCH) {
-    SetError(r);
-
-    r = uv_process_kill(&uv_process_, kill_signal_);
-    assert(r >= 0 || r == UV_ESRCH);
-  }
-
-  // Stop the timeout timer if it is running.
-  StopKillTimer();
-}
-
-
-void SyncProcessRunner::StopKillTimer() {
-  assert((timeout_ > 0) == kill_timer_initialized_);
-  if (kill_timer_initialized_) {
-    int r = uv_timer_stop(&uv_timer_);
-    assert(r == 0);
-  }
-}
-
-
-void SyncProcessRunner::IncrementBufferSizeAndCheckOverflow(ssize_t length) {
-  buffered_output_size_ += length;
-  if (max_buffer_ > 0 && buffered_output_size_ > max_buffer_)
-    Kill();
 }
 
 
@@ -825,13 +853,13 @@ Local<Object> SyncProcessRunner::BuildResultObject() {
 
 Local<Array> SyncProcessRunner::BuildOutputArray() {
   assert(lifecycle_ >= kInitialized);
-  assert(pipes_ != NULL);
+  assert(stdio_pipes_ != NULL);
 
   HandleScope scope(node_isolate);
   Local<Array> js_output = Array::New(stdio_count_);
 
   for (uint32_t i = 0; i < stdio_count_; i++) {
-    SyncProcessStdioPipe* h = pipes_[i];
+    SyncProcessStdioPipe* h = stdio_pipes_[i];
     if (h != NULL && h->writable())
       js_output->Set(i, h->GetOutputAsBuffer());
     else
@@ -963,9 +991,10 @@ int SyncProcessRunner::ParseStdioOptions(Local<Value> js_value) {
   js_stdio_options = js_value.As<Array>();
 
   stdio_count_ = js_stdio_options->Length();
-
-  pipes_ = new SyncProcessStdioPipe*[stdio_count_]();
   uv_stdio_containers_ = new uv_stdio_container_t[stdio_count_];
+
+  stdio_pipes_ = new SyncProcessStdioPipe*[stdio_count_]();
+  stdio_pipes_initialized_ = true;
 
   for (uint32_t i = 0; i < stdio_count_; i++) {
     Local<Value> js_stdio_option = js_stdio_options->Get(i);
@@ -1032,7 +1061,7 @@ int SyncProcessRunner::ParseStdioOption(int child_fd,
 
 int SyncProcessRunner::AddStdioIgnore(uint32_t child_fd) {
   assert(child_fd < stdio_count_);
-  assert(pipes_[child_fd] == NULL);
+  assert(stdio_pipes_[child_fd] == NULL);
 
   uv_stdio_containers_[child_fd].flags = UV_IGNORE;
 
@@ -1045,7 +1074,7 @@ int SyncProcessRunner::AddStdioPipe(uint32_t child_fd,
                                     bool writable,
                                     uv_buf_t input_buffer) {
   assert(child_fd < stdio_count_);
-  assert(pipes_[child_fd] == NULL);
+  assert(stdio_pipes_[child_fd] == NULL);
 
   SyncProcessStdioPipe* h = new SyncProcessStdioPipe(this,
                                                      readable,
@@ -1058,7 +1087,7 @@ int SyncProcessRunner::AddStdioPipe(uint32_t child_fd,
     return r;
   }
 
-  pipes_[child_fd] = h;
+  stdio_pipes_[child_fd] = h;
 
   uv_stdio_containers_[child_fd].flags = h->uv_flags();
   uv_stdio_containers_[child_fd].data.stream = h->uv_stream();
@@ -1069,7 +1098,7 @@ int SyncProcessRunner::AddStdioPipe(uint32_t child_fd,
 
 int SyncProcessRunner::AddStdioInheritFD(uint32_t child_fd, int inherit_fd) {
   assert(child_fd < stdio_count_);
-  assert(pipes_[child_fd] == NULL);
+  assert(stdio_pipes_[child_fd] == NULL);
 
   uv_stdio_containers_[child_fd].flags = UV_INHERIT_FD;
   uv_stdio_containers_[child_fd].data.fd = inherit_fd;
