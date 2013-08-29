@@ -541,7 +541,7 @@ void SyncProcessStdioPipe::CloseCallback(uv_handle_t* handle) {
 
 
 void SyncProcessRunner::Initialize(Handle<Object> target) {
-  NODE_SET_METHOD(target, "spawnSync", Spawn);
+  NODE_SET_METHOD(target, "spawn", Spawn);
 }
 
 
