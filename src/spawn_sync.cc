@@ -775,8 +775,11 @@ void SyncProcessRunner::Kill() {
 
 void SyncProcessRunner::IncrementBufferSizeAndCheckOverflow(ssize_t length) {
   buffered_output_size_ += length;
-  if (max_buffer_ > 0 && buffered_output_size_ > max_buffer_)
+
+  if (max_buffer_ > 0 && buffered_output_size_ > max_buffer_) {
+    SetError(UV_ENOBUFS);
     Kill();
+  }
 }
 
 
