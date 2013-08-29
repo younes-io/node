@@ -668,7 +668,7 @@ void SyncProcessRunner::TryInitializeAndRunLoop(Local<Value> options) {
     if (h != NULL) {
       r = h->Start();
       if (r < 0)
-        return SetError(r);
+        return SetPipeError(r);
     }
   }
 
