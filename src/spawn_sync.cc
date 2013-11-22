@@ -53,8 +53,8 @@ class SyncProcessOutputBuffer {
  public:
   inline SyncProcessOutputBuffer();
 
-  inline uv_buf_t OnAlloc(size_t suggested_size) const;
-  inline void OnRead(uv_buf_t buf, size_t nread);
+  inline void OnAlloc(size_t suggested_size, uv_buf_t* buf) const;
+  inline void OnRead(const uv_buf_t* buf, size_t nread);
 
   inline size_t Copy(char* dest) const;
 
@@ -107,16 +107,20 @@ class SyncProcessStdioPipe {
   inline size_t OutputLength() const;
   inline void CopyOutput(char* dest) const;
 
-  inline uv_buf_t OnAlloc(size_t suggested_size);
-  inline void OnRead(uv_buf_t buf, ssize_t nread);
+  inline void OnAlloc(size_t suggested_size, uv_buf_t* buf);
+  inline void OnRead(const uv_buf_t* buf, ssize_t nread);
   inline void OnWriteDone(int result);
   inline void OnShutdownDone(int result);
   inline void OnClose();
 
   inline void SetError(int error);
 
-  static uv_buf_t AllocCallback(uv_handle_t* handle, size_t suggested_size);
-  static void ReadCallback(uv_stream_t* stream, ssize_t nread, uv_buf_t buf);
+  static void AllocCallback(uv_handle_t* handle,
+                            size_t suggested_size,
+                            uv_buf_t* buf);
+  static void ReadCallback(uv_stream_t* stream,
+                           ssize_t nread,
+                           const uv_buf_t* buf);
   static void WriteCallback(uv_write_t* req, int result);
   static void ShutdownCallback(uv_shutdown_t* req, int result);
   static void CloseCallback(uv_handle_t* handle);
@@ -188,8 +192,8 @@ class SyncProcessRunner {
 
   static bool IsSet(Local<Value> value);
   template <typename t> static bool CheckRange(Local<Value> js_value);
-  static int CopyJsString(Local<Value> js_value, char*& target);
-  static int CopyJsStringArray(Local<Value> js_value, char*& target);
+  static int CopyJsString(Local<Value> js_value, const char** target);
+  static int CopyJsStringArray(Local<Value> js_value, char** target);
 
   static void ExitCallback(uv_process_t* handle,
                            int64_t exit_status,
@@ -209,10 +213,10 @@ class SyncProcessRunner {
   bool stdio_pipes_initialized_;
 
   uv_process_options_t uv_process_options_;
-  char* file_buffer_;
+  const char* file_buffer_;
   char* args_buffer_;
   char* env_buffer_;
-  char* cwd_buffer_;
+  const char* cwd_buffer_;
 
   uv_process_t uv_process_;
   bool killed_;
@@ -240,17 +244,18 @@ SyncProcessOutputBuffer::SyncProcessOutputBuffer()
 }
 
 
-uv_buf_t SyncProcessOutputBuffer::OnAlloc(size_t suggested_size) const {
+void SyncProcessOutputBuffer::OnAlloc(size_t suggested_size,
+                                      uv_buf_t* buf) const {
   if (used() == kBufferSize)
-    return uv_buf_init(NULL, 0);
-
-  return uv_buf_init(data_ + used(), available());
+    *buf = uv_buf_init(NULL, 0);
+  else
+    *buf = uv_buf_init(data_ + used(), available());
 }
 
 
-void SyncProcessOutputBuffer::OnRead(uv_buf_t buf, size_t nread) {
+void SyncProcessOutputBuffer::OnRead(const uv_buf_t* buf, size_t nread) {
   // If we hand out the same chunk twice, this should catch it.
-  assert(buf.base == data_ + used());
+  assert(buf->base == data_ + used());
   used_ += static_cast<unsigned int>(nread);
 }
 
@@ -440,7 +445,7 @@ void SyncProcessStdioPipe::CopyOutput(char* dest) const {
 }
 
 
-uv_buf_t SyncProcessStdioPipe::OnAlloc(size_t suggested_size) {
+void SyncProcessStdioPipe::OnAlloc(size_t suggested_size, uv_buf_t* buf) {
   // This function assumes that libuv will never allocate two buffers for the
   // same stream at the same time. There's an assert in
   // SyncProcessOutputBuffer::OnRead that would fail if this assumption was
@@ -458,11 +463,11 @@ uv_buf_t SyncProcessStdioPipe::OnAlloc(size_t suggested_size) {
     last_output_buffer_ = buf;
   }
 
-  return last_output_buffer_->OnAlloc(suggested_size);
+  last_output_buffer_->OnAlloc(suggested_size, buf);
 }
 
 
-void SyncProcessStdioPipe::OnRead(uv_buf_t buf, ssize_t nread) {
+void SyncProcessStdioPipe::OnRead(const uv_buf_t* buf, ssize_t nread) {
   if (nread == UV_EOF) {
     // Libuv implicitly stops reading on EOF.
 
@@ -501,17 +506,18 @@ void SyncProcessStdioPipe::SetError(int error) {
 }
 
 
-uv_buf_t SyncProcessStdioPipe::AllocCallback(uv_handle_t* handle,
-                                             size_t suggested_size) {
+void SyncProcessStdioPipe::AllocCallback(uv_handle_t* handle,
+                                         size_t suggested_size,
+                                         uv_buf_t* buf) {
   SyncProcessStdioPipe* self =
       reinterpret_cast<SyncProcessStdioPipe*>(handle->data);
-  return self->OnAlloc(suggested_size);
+  self->OnAlloc(suggested_size, buf);
 }
 
 
 void SyncProcessStdioPipe::ReadCallback(uv_stream_t* stream,
                                         ssize_t nread,
-                                        uv_buf_t buf) {
+                                        const uv_buf_t* buf) {
   SyncProcessStdioPipe* self =
         reinterpret_cast<SyncProcessStdioPipe*>(stream->data);
   self->OnRead(buf, nread);
@@ -657,7 +663,7 @@ void SyncProcessRunner::TryInitializeAndRunLoop(Local<Value> options) {
   }
 
   uv_process_options_.exit_cb = ExitCallback;
-  r = uv_spawn(uv_loop_, &uv_process_, uv_process_options_);
+  r = uv_spawn(uv_loop_, &uv_process_, &uv_process_options_);
   if (r < 0)
     return SetError(r);
   uv_process_.data = this;
@@ -898,13 +904,13 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
   Local<Object> js_options = js_value.As<Object>();
 
   Local<Value> js_file = js_options->Get(file_sym);
-  r = CopyJsString(js_file, file_buffer_);
+  r = CopyJsString(js_file, &file_buffer_);
   if (r < 0)
     return r;
   uv_process_options_.file = file_buffer_;
 
   Local<Value> js_args = js_options->Get(args_sym);
-  r = CopyJsStringArray(js_args, args_buffer_);
+  r = CopyJsStringArray(js_args, &args_buffer_);
   if (r < 0)
     return r;
   uv_process_options_.args = reinterpret_cast<char**>(args_buffer_);
@@ -912,7 +918,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
 
   Local<Value> js_cwd = js_options->Get(cwd_sym);
   if (IsSet(js_cwd)) {
-    r = CopyJsString(js_cwd, uv_process_options_.cwd);
+    r = CopyJsString(js_cwd, &uv_process_options_.cwd);
     if (r < 0)
       return r;
     uv_process_options_.cwd = cwd_buffer_;
@@ -920,7 +926,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
 
   Local<Value> js_env_pairs = js_options->Get(envPairs_sym);
   if (IsSet(js_env_pairs)) {
-    r = CopyJsStringArray(js_env_pairs, env_buffer_);
+    r = CopyJsStringArray(js_env_pairs, &env_buffer_);
     if (r < 0)
       return r;
     uv_process_options_.args = reinterpret_cast<char**>(env_buffer_);
@@ -1135,7 +1141,7 @@ bool SyncProcessRunner::CheckRange(Local<Value> js_value) {
 }
 
 
-int SyncProcessRunner::CopyJsString(Local<Value> js_value, char*& target) {
+int SyncProcessRunner::CopyJsString(Local<Value> js_value, const char** target) {
   Local<String> js_string;
   size_t size, written;
   char* buffer;
@@ -1153,13 +1159,13 @@ int SyncProcessRunner::CopyJsString(Local<Value> js_value, char*& target) {
   written = StringBytes::Write(buffer, -1, js_string, UTF8);
   buffer[written] = '\0';
 
-  target = buffer;
+  *target = buffer;
   return 0;
 }
 
 
 int SyncProcessRunner::CopyJsStringArray(Local<Value> js_value,
-                                         char*& target) {
+                                         char** target) {
   Local<Array> js_array;
   uint32_t length;
   size_t list_size, data_size, data_offset;
@@ -1208,7 +1214,7 @@ int SyncProcessRunner::CopyJsStringArray(Local<Value> js_value,
 
   list[length] = NULL;
 
-  target = buffer;
+  *target = buffer;
   return 0;
 }
 
