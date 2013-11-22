@@ -21,6 +21,7 @@
 
 #include "node.h"
 #include "node_buffer.h"
+#include "env-inl.h"
 #include "string_bytes.h"
 
 #include <string.h>
@@ -40,6 +41,7 @@ using v8::Number;
 using v8::Object;
 using v8::String;
 using v8::Value;
+using v8::Isolate;
 
 
 class SyncProcessOutputBuffer;
@@ -156,8 +158,10 @@ class SyncProcessRunner {
  private:
   friend class SyncProcessStdioPipe;
 
-  SyncProcessRunner();
+  SyncProcessRunner(Environment* env_);
   ~SyncProcessRunner();
+
+  inline Environment* env() const;
 
   Local<Object> Run(Local<Value> options);
   void TryInitializeAndRunLoop(Local<Value> options);
@@ -235,6 +239,8 @@ class SyncProcessRunner {
   int pipe_error_;
 
   Lifecycle lifecycle_;
+
+  Environment* env_;
 };
 
 
@@ -551,14 +557,15 @@ void SyncProcessRunner::Initialize(Handle<Object> target) {
 
 
 void SyncProcessRunner::Spawn(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-  SyncProcessRunner p;
+  Isolate* isolate = args.GetIsolate();
+  HandleScope scope(isolate);
+  SyncProcessRunner p(Environment::GetCurrent(isolate));
   Local<Value> result = p.Run(args[0]);
   args.GetReturnValue().Set(result);
 }
 
 
-SyncProcessRunner::SyncProcessRunner()
+SyncProcessRunner::SyncProcessRunner(Environment* env)
     : max_buffer_(0),
       timeout_(0),
       kill_signal_(SIGTERM),
@@ -589,7 +596,9 @@ SyncProcessRunner::SyncProcessRunner()
       error_(0),
       pipe_error_(0),
 
-      lifecycle_(kUninitialized)
+      lifecycle_(kUninitialized),
+
+      env_(env)
 {
 }
 
@@ -610,6 +619,11 @@ SyncProcessRunner::~SyncProcessRunner() {
   delete[] cwd_buffer_;
   delete[] env_buffer_;
   delete[] uv_stdio_containers_;
+}
+
+
+Environment* SyncProcessRunner::env() const {
+  return env_;
 }
 
 
@@ -827,33 +841,28 @@ void SyncProcessRunner::SetPipeError(int pipe_error) {
 Local<Object> SyncProcessRunner::BuildResultObject() {
   HandleScope scope(node_isolate);
 
-  Local<String> error_sym = FIXED_ONE_BYTE_STRING(node_isolate, "error");
-  Local<String> status_sym = FIXED_ONE_BYTE_STRING(node_isolate, "status");
-  Local<String> signal_sym = FIXED_ONE_BYTE_STRING(node_isolate, "signal");
-  Local<String> output_sym = FIXED_ONE_BYTE_STRING(node_isolate, "output");
-
   Local<Object> js_result = Object::New();
 
   if (GetError() != 0)
-    js_result->Set(error_sym, Integer::New(GetError()));
+    js_result->Set(env()->error_sym(), Integer::New(GetError()));
 
   if (exit_status_ >= 0)
-    js_result->Set(status_sym,
+    js_result->Set(env()->status_sym(),
         Number::New(node_isolate, static_cast<double>(exit_status_)));
   else
     // If exit_status_ < 0 the process was never started because of some error.
-    js_result->Set(status_sym, Null(node_isolate));
+    js_result->Set(env()->status_sym(), Null(node_isolate));
 
   if (term_signal_ > 0)
-    js_result->Set(signal_sym,
+    js_result->Set(env()->signal_sym(),
         String::NewFromUtf8(node_isolate, signo_string(term_signal_)));
   else
-    js_result->Set(signal_sym, Null());
+    js_result->Set(env()->signal_sym(), Null());
 
   if (exit_status_ >= 0)
-    js_result->Set(output_sym, BuildOutputArray());
+    js_result->Set(env()->output_sym(), BuildOutputArray());
   else
-    js_result->Set(output_sym, Null(node_isolate));
+    js_result->Set(env()->output_sym(), Null(node_isolate));
 
   return scope.Close(js_result);
 }
@@ -882,41 +891,25 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
   HandleScope scope(node_isolate);
   int r;
 
-  Local<String> file_sym = FIXED_ONE_BYTE_STRING(node_isolate, "file");
-  Local<String> args_sym = FIXED_ONE_BYTE_STRING(node_isolate, "args");
-  Local<String> cwd_sym = FIXED_ONE_BYTE_STRING(node_isolate, "cwd");
-  Local<String> envPairs_sym = FIXED_ONE_BYTE_STRING(node_isolate, "envPairs");
-  Local<String> uid_sym = FIXED_ONE_BYTE_STRING(node_isolate, "uid");
-  Local<String> gid_sym = FIXED_ONE_BYTE_STRING(node_isolate, "gid");
-  Local<String> detached_sym = FIXED_ONE_BYTE_STRING(node_isolate, "detached");
-  Local<String> windowsVerbatimArguments_sym =
-      FIXED_ONE_BYTE_STRING(node_isolate, "windowsVerbatimArguments");
-  Local<String> stdio_sym = FIXED_ONE_BYTE_STRING(node_isolate, "stdio");
-  Local<String> timeout_sym = FIXED_ONE_BYTE_STRING(node_isolate, "timeout");
-  Local<String> maxBuffer_sym =
-      FIXED_ONE_BYTE_STRING(node_isolate, "maxBuffer");
-  Local<String> killSignal_sym =
-      FIXED_ONE_BYTE_STRING(node_isolate, "killSignal");
-
   if (!js_value->IsObject())
     return UV_EINVAL;
 
   Local<Object> js_options = js_value.As<Object>();
 
-  Local<Value> js_file = js_options->Get(file_sym);
+  Local<Value> js_file = js_options->Get(env()->file_sym());
   r = CopyJsString(js_file, &file_buffer_);
   if (r < 0)
     return r;
   uv_process_options_.file = file_buffer_;
 
-  Local<Value> js_args = js_options->Get(args_sym);
+  Local<Value> js_args = js_options->Get(env()->args_sym());
   r = CopyJsStringArray(js_args, &args_buffer_);
   if (r < 0)
     return r;
   uv_process_options_.args = reinterpret_cast<char**>(args_buffer_);
 
 
-  Local<Value> js_cwd = js_options->Get(cwd_sym);
+  Local<Value> js_cwd = js_options->Get(env()->cwd_sym());
   if (IsSet(js_cwd)) {
     r = CopyJsString(js_cwd, &uv_process_options_.cwd);
     if (r < 0)
@@ -924,7 +917,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     uv_process_options_.cwd = cwd_buffer_;
   }
 
-  Local<Value> js_env_pairs = js_options->Get(envPairs_sym);
+  Local<Value> js_env_pairs = js_options->Get(env()->env_pairs_sym());
   if (IsSet(js_env_pairs)) {
     r = CopyJsStringArray(js_env_pairs, &env_buffer_);
     if (r < 0)
@@ -932,7 +925,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     uv_process_options_.args = reinterpret_cast<char**>(env_buffer_);
   }
 
-  Local<Value> js_uid = js_options->Get(uid_sym);
+  Local<Value> js_uid = js_options->Get(env()->uid_sym());
   if (IsSet(js_uid)) {
     if (!CheckRange<uv_uid_t>(js_uid))
       return UV_EINVAL;
@@ -940,7 +933,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     uv_process_options_.flags |= UV_PROCESS_SETUID;
   }
 
-  Local<Value> js_gid = js_options->Get(gid_sym);
+  Local<Value> js_gid = js_options->Get(env()->gid_sym());
   if (IsSet(js_gid)) {
     if (!CheckRange<uv_gid_t>(js_gid))
       return UV_EINVAL;
@@ -948,13 +941,13 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     uv_process_options_.flags |= UV_PROCESS_SETGID;
   }
 
-  if (js_options->Get(detached_sym)->BooleanValue())
+  if (js_options->Get(env()->detached_sym())->BooleanValue())
     uv_process_options_.flags |= UV_PROCESS_DETACHED;
 
-  if (js_options->Get(windowsVerbatimArguments_sym)->BooleanValue())
+  if (js_options->Get(env()->windows_verbatim_arguments_sym())->BooleanValue())
     uv_process_options_.flags |= UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS;
 
-  Local<Value> js_timeout = js_options->Get(timeout_sym);
+  Local<Value> js_timeout = js_options->Get(env()->timeout_sym());
   if (IsSet(js_timeout)) {
     if (!js_timeout->IsNumber())
       return UV_EINVAL;
@@ -964,14 +957,14 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     timeout_ = static_cast<uint64_t>(timeout);
   }
 
-  Local<Value> js_max_buffer = js_options->Get(maxBuffer_sym);
+  Local<Value> js_max_buffer = js_options->Get(env()->max_buffer_sym());
   if (IsSet(js_max_buffer)) {
     if (!CheckRange<uint32_t>(js_max_buffer))
       return UV_EINVAL;
     max_buffer_ = js_max_buffer->Uint32Value();
   }
 
-  Local<Value> js_kill_signal = js_options->Get(killSignal_sym);
+  Local<Value> js_kill_signal = js_options->Get(env()->kill_signal_sym());
   if (IsSet(js_kill_signal)) {
     if (!js_kill_signal->IsInt32())
       return UV_EINVAL;
@@ -980,7 +973,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
       return UV_EINVAL;
   }
 
-  Local<Value> js_stdio = js_options->Get(stdio_sym);
+  Local<Value> js_stdio = js_options->Get(env()->stdio_sym());
   r = ParseStdioOptions(js_stdio);
   if (r < 0)
     return r;
@@ -1024,28 +1017,19 @@ int SyncProcessRunner::ParseStdioOptions(Local<Value> js_value) {
 
 int SyncProcessRunner::ParseStdioOption(int child_fd,
                                         Local<Object> js_stdio_option) {
-  Local<String> type_sym = FIXED_ONE_BYTE_STRING(node_isolate, "type");
-  Local<String> ignore_sym = FIXED_ONE_BYTE_STRING(node_isolate, "ignore");
-  Local<String> pipe_sym = FIXED_ONE_BYTE_STRING(node_isolate, "pipe");
-  Local<String> inherit_sym = FIXED_ONE_BYTE_STRING(node_isolate, "inherit");
-  Local<String> readable_sym = FIXED_ONE_BYTE_STRING(node_isolate, "readable");
-  Local<String> writable_sym = FIXED_ONE_BYTE_STRING(node_isolate, "writable");
-  Local<String> input_sym = FIXED_ONE_BYTE_STRING(node_isolate, "input");
-  Local<String> fd_sym = FIXED_ONE_BYTE_STRING(node_isolate, "fd");
+  Local<Value> js_type = js_stdio_option->Get(env()->type_sym());
 
-  Local<Value> js_type = js_stdio_option->Get(type_sym);
-
-  if (js_type->StrictEquals(ignore_sym)) {
+  if (js_type->StrictEquals(env()->ignore_sym())) {
     return AddStdioIgnore(child_fd);
 
-  } else if (js_type->StrictEquals(pipe_sym)) {
-    bool readable = js_stdio_option->Get(readable_sym)->BooleanValue();
-    bool writable = js_stdio_option->Get(writable_sym)->BooleanValue();
+  } else if (js_type->StrictEquals(env()->pipe_sym())) {
+    bool readable = js_stdio_option->Get(env()->readable_sym())->BooleanValue();
+    bool writable = js_stdio_option->Get(env()->writable_sym())->BooleanValue();
 
     uv_buf_t buf = uv_buf_init(NULL, 0);
 
     if (readable) {
-      Local<Value> input = js_stdio_option->Get(input_sym);
+      Local<Value> input = js_stdio_option->Get(env()->input_sym());
       if (!Buffer::HasInstance(input))
         // We can only deal with buffers for now.
         assert(input->IsUndefined());
@@ -1056,8 +1040,8 @@ int SyncProcessRunner::ParseStdioOption(int child_fd,
 
     return AddStdioPipe(child_fd, readable, writable, buf);
 
-  } else if (js_type->StrictEquals(inherit_sym)) {
-    int inherit_fd = js_stdio_option->Get(fd_sym)->Int32Value();
+  } else if (js_type->StrictEquals(env()->inherit_sym())) {
+    int inherit_fd = js_stdio_option->Get(env()->fd_sym())->Int32Value();
     return AddStdioInheritFD(child_fd, inherit_fd);
 
   } else {
