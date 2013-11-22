@@ -234,9 +234,9 @@ class SyncProcessRunner {
 };
 
 
-SyncProcessOutputBuffer::SyncProcessOutputBuffer():
-  used_(0),
-  next_(NULL) {
+SyncProcessOutputBuffer::SyncProcessOutputBuffer()
+    : used_(0),
+      next_(NULL) {
 }
 
 
@@ -284,21 +284,20 @@ void SyncProcessOutputBuffer::set_next(SyncProcessOutputBuffer* next) {
 SyncProcessStdioPipe::SyncProcessStdioPipe(SyncProcessRunner* process_handler,
                                            bool readable,
                                            bool writable,
-                                           uv_buf_t input_buffer):
-  process_handler_(process_handler),
-  readable_(readable),
-  writable_(writable),
-  input_buffer_(input_buffer),
+                                           uv_buf_t input_buffer)
+    : process_handler_(process_handler),
+      readable_(readable),
+      writable_(writable),
+      input_buffer_(input_buffer),
 
-  first_output_buffer_(NULL),
-  last_output_buffer_(NULL),
+      first_output_buffer_(NULL),
+      last_output_buffer_(NULL),
 
-  uv_pipe_(),
-  write_req_(),
-  shutdown_req_(),
+      uv_pipe_(),
+      write_req_(),
+      shutdown_req_(),
 
-  lifecycle_(kUninitialized)
-{
+      lifecycle_(kUninitialized) {
   assert(readable || writable);
 }
 
@@ -553,38 +552,38 @@ void SyncProcessRunner::Spawn(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-SyncProcessRunner::SyncProcessRunner():
-  max_buffer_(0),
-  timeout_(0),
-  kill_signal_(SIGTERM),
+SyncProcessRunner::SyncProcessRunner()
+    : max_buffer_(0),
+      timeout_(0),
+      kill_signal_(SIGTERM),
 
-  uv_loop_(NULL),
+      uv_loop_(NULL),
 
-  stdio_count_(0),
-  uv_stdio_containers_(NULL),
-  stdio_pipes_(NULL),
-  stdio_pipes_initialized_(false),
+      stdio_count_(0),
+      uv_stdio_containers_(NULL),
+      stdio_pipes_(NULL),
+      stdio_pipes_initialized_(false),
 
-  uv_process_options_(),
-  file_buffer_(NULL),
-  args_buffer_(NULL),
-  env_buffer_(NULL),
-  cwd_buffer_(NULL),
+      uv_process_options_(),
+      file_buffer_(NULL),
+      args_buffer_(NULL),
+      env_buffer_(NULL),
+      cwd_buffer_(NULL),
 
-  uv_process_(),
-  killed_(false),
+      uv_process_(),
+      killed_(false),
 
-  buffered_output_size_(0),
-  exit_status_(-1),
-  term_signal_(-1),
+      buffered_output_size_(0),
+      exit_status_(-1),
+      term_signal_(-1),
 
-  uv_timer_(),
-  kill_timer_initialized_(false),
+      uv_timer_(),
+      kill_timer_initialized_(false),
 
-  error_(0),
-  pipe_error_(0),
+      error_(0),
+      pipe_error_(0),
 
-  lifecycle_(kUninitialized)
+      lifecycle_(kUninitialized)
 {
 }
 
@@ -760,7 +759,7 @@ void SyncProcessRunner::Kill() {
     if (r < 0 && r != UV_ESRCH) {
       SetError(r);
 
-      r = uv_process_kill(&uv_process_, kill_signal_);
+      r = uv_process_kill(&uv_process_, SIGKILL);
       assert(r >= 0 || r == UV_ESRCH);
     }
   }
@@ -837,7 +836,7 @@ Local<Object> SyncProcessRunner::BuildResultObject() {
         Number::New(node_isolate, static_cast<double>(exit_status_)));
   else
     // If exit_status_ < 0 the process was never started because of some error.
-    js_result->Set(status_sym, Null());
+    js_result->Set(status_sym, Null(node_isolate));
 
   if (term_signal_ > 0)
     js_result->Set(signal_sym,
@@ -848,7 +847,7 @@ Local<Object> SyncProcessRunner::BuildResultObject() {
   if (exit_status_ >= 0)
     js_result->Set(output_sym, BuildOutputArray());
   else
-    js_result->Set(output_sym, Null());
+    js_result->Set(output_sym, Null(node_isolate));
 
   return scope.Close(js_result);
 }
