@@ -1036,12 +1036,15 @@ int SyncProcessRunner::ParseStdioOption(int child_fd,
 
     if (readable) {
       Local<Value> input = js_stdio_option->Get(env()->input_sym());
-      if (!Buffer::HasInstance(input))
-        // We can only deal with buffers for now.
-        assert(input->IsUndefined());
-      else
+      if (Buffer::HasInstance(input)) {
         buf = uv_buf_init(Buffer::Data(input),
                           static_cast<unsigned int>(Buffer::Length(input)));
+      } else if (!input->IsUndefined() && !input->IsNull()) {
+        // Strings, numbers etc. are currently unsupported. It's not possible
+        // to create a buffer for them here because there is no way to free
+        // them afterwards.
+        return UV_EINVAL;
+      }
     }
 
     return AddStdioPipe(child_fd, readable, writable, buf);
