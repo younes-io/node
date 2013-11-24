@@ -31,17 +31,18 @@
 namespace node {
 
 using v8::Array;
+using v8::Context;
 using v8::FunctionCallbackInfo;
 using v8::Handle;
 using v8::HandleScope;
 using v8::Integer;
+using v8::Isolate;
 using v8::Local;
 using v8::Null;
 using v8::Number;
 using v8::Object;
 using v8::String;
 using v8::Value;
-using v8::Isolate;
 
 
 class SyncProcessOutputBuffer;
@@ -152,7 +153,9 @@ class SyncProcessRunner {
   };
 
  public:
-  static void Initialize(Handle<Object> target);
+  static void Initialize(Handle<Object> target,
+                         Handle<Value> unused,
+                         Handle<Context> context);
   static void Spawn(const FunctionCallbackInfo<Value>& args);
 
  private:
@@ -551,7 +554,10 @@ void SyncProcessStdioPipe::CloseCallback(uv_handle_t* handle) {
 }
 
 
-void SyncProcessRunner::Initialize(Handle<Object> target) {
+void SyncProcessRunner::Initialize(Handle<Object> target,
+                                   Handle<Value> unused,
+                                   Handle<Context> context) {
+  Environment* env = Environment::GetCurrent(context);
   NODE_SET_METHOD(target, "spawn", Spawn);
 }
 
@@ -1223,4 +1229,4 @@ void SyncProcessRunner::KillTimerCloseCallback(uv_handle_t* handle) {
 
 }  // namespace node
 
-NODE_MODULE(node_spawn_sync, node::SyncProcessRunner::Initialize)
+NODE_MODULE_CONTEXT_AWARE(node_spawn_sync, node::SyncProcessRunner::Initialize)
