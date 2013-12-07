@@ -850,25 +850,25 @@ Local<Object> SyncProcessRunner::BuildResultObject() {
   Local<Object> js_result = Object::New();
 
   if (GetError() != 0)
-    js_result->Set(env()->error_sym(), Integer::New(GetError()));
+    js_result->Set(env()->error_string(), Integer::New(GetError()));
 
   if (exit_status_ >= 0)
-    js_result->Set(env()->status_sym(),
+    js_result->Set(env()->status_string(),
         Number::New(node_isolate, static_cast<double>(exit_status_)));
   else
     // If exit_status_ < 0 the process was never started because of some error.
-    js_result->Set(env()->status_sym(), Null(node_isolate));
+    js_result->Set(env()->status_string(), Null(node_isolate));
 
   if (term_signal_ > 0)
-    js_result->Set(env()->signal_sym(),
+    js_result->Set(env()->signal_string(),
         String::NewFromUtf8(node_isolate, signo_string(term_signal_)));
   else
-    js_result->Set(env()->signal_sym(), Null());
+    js_result->Set(env()->signal_string(), Null());
 
   if (exit_status_ >= 0)
-    js_result->Set(env()->output_sym(), BuildOutputArray());
+    js_result->Set(env()->output_string(), BuildOutputArray());
   else
-    js_result->Set(env()->output_sym(), Null(node_isolate));
+    js_result->Set(env()->output_string(), Null(node_isolate));
 
   return scope.Close(js_result);
 }
@@ -902,20 +902,20 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
 
   Local<Object> js_options = js_value.As<Object>();
 
-  Local<Value> js_file = js_options->Get(env()->file_sym());
+  Local<Value> js_file = js_options->Get(env()->file_string());
   r = CopyJsString(js_file, &file_buffer_);
   if (r < 0)
     return r;
   uv_process_options_.file = file_buffer_;
 
-  Local<Value> js_args = js_options->Get(env()->args_sym());
+  Local<Value> js_args = js_options->Get(env()->args_string());
   r = CopyJsStringArray(js_args, &args_buffer_);
   if (r < 0)
     return r;
   uv_process_options_.args = reinterpret_cast<char**>(args_buffer_);
 
 
-  Local<Value> js_cwd = js_options->Get(env()->cwd_sym());
+  Local<Value> js_cwd = js_options->Get(env()->cwd_string());
   if (IsSet(js_cwd)) {
     r = CopyJsString(js_cwd, &uv_process_options_.cwd);
     if (r < 0)
@@ -923,7 +923,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     uv_process_options_.cwd = cwd_buffer_;
   }
 
-  Local<Value> js_env_pairs = js_options->Get(env()->env_pairs_sym());
+  Local<Value> js_env_pairs = js_options->Get(env()->env_pairs_string());
   if (IsSet(js_env_pairs)) {
     r = CopyJsStringArray(js_env_pairs, &env_buffer_);
     if (r < 0)
@@ -931,7 +931,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     uv_process_options_.args = reinterpret_cast<char**>(env_buffer_);
   }
 
-  Local<Value> js_uid = js_options->Get(env()->uid_sym());
+  Local<Value> js_uid = js_options->Get(env()->uid_string());
   if (IsSet(js_uid)) {
     if (!CheckRange<uv_uid_t>(js_uid))
       return UV_EINVAL;
@@ -939,7 +939,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     uv_process_options_.flags |= UV_PROCESS_SETUID;
   }
 
-  Local<Value> js_gid = js_options->Get(env()->gid_sym());
+  Local<Value> js_gid = js_options->Get(env()->gid_string());
   if (IsSet(js_gid)) {
     if (!CheckRange<uv_gid_t>(js_gid))
       return UV_EINVAL;
@@ -947,13 +947,13 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     uv_process_options_.flags |= UV_PROCESS_SETGID;
   }
 
-  if (js_options->Get(env()->detached_sym())->BooleanValue())
+  if (js_options->Get(env()->detached_string())->BooleanValue())
     uv_process_options_.flags |= UV_PROCESS_DETACHED;
 
-  if (js_options->Get(env()->windows_verbatim_arguments_sym())->BooleanValue())
+  if (js_options->Get(env()->windows_verbatim_arguments_string())->BooleanValue())
     uv_process_options_.flags |= UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS;
 
-  Local<Value> js_timeout = js_options->Get(env()->timeout_sym());
+  Local<Value> js_timeout = js_options->Get(env()->timeout_string());
   if (IsSet(js_timeout)) {
     if (!js_timeout->IsNumber())
       return UV_EINVAL;
@@ -963,14 +963,14 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
     timeout_ = static_cast<uint64_t>(timeout);
   }
 
-  Local<Value> js_max_buffer = js_options->Get(env()->max_buffer_sym());
+  Local<Value> js_max_buffer = js_options->Get(env()->max_buffer_string());
   if (IsSet(js_max_buffer)) {
     if (!CheckRange<uint32_t>(js_max_buffer))
       return UV_EINVAL;
     max_buffer_ = js_max_buffer->Uint32Value();
   }
 
-  Local<Value> js_kill_signal = js_options->Get(env()->kill_signal_sym());
+  Local<Value> js_kill_signal = js_options->Get(env()->kill_signal_string());
   if (IsSet(js_kill_signal)) {
     if (!js_kill_signal->IsInt32())
       return UV_EINVAL;
@@ -979,7 +979,7 @@ int SyncProcessRunner::ParseOptions(Local<Value> js_value) {
       return UV_EINVAL;
   }
 
-  Local<Value> js_stdio = js_options->Get(env()->stdio_sym());
+  Local<Value> js_stdio = js_options->Get(env()->stdio_string());
   r = ParseStdioOptions(js_stdio);
   if (r < 0)
     return r;
@@ -1023,19 +1023,19 @@ int SyncProcessRunner::ParseStdioOptions(Local<Value> js_value) {
 
 int SyncProcessRunner::ParseStdioOption(int child_fd,
                                         Local<Object> js_stdio_option) {
-  Local<Value> js_type = js_stdio_option->Get(env()->type_sym());
+  Local<Value> js_type = js_stdio_option->Get(env()->type_string());
 
-  if (js_type->StrictEquals(env()->ignore_sym())) {
+  if (js_type->StrictEquals(env()->ignore_string())) {
     return AddStdioIgnore(child_fd);
 
-  } else if (js_type->StrictEquals(env()->pipe_sym())) {
-    bool readable = js_stdio_option->Get(env()->readable_sym())->BooleanValue();
-    bool writable = js_stdio_option->Get(env()->writable_sym())->BooleanValue();
+  } else if (js_type->StrictEquals(env()->pipe_string())) {
+    bool readable = js_stdio_option->Get(env()->readable_string())->BooleanValue();
+    bool writable = js_stdio_option->Get(env()->writable_string())->BooleanValue();
 
     uv_buf_t buf = uv_buf_init(NULL, 0);
 
     if (readable) {
-      Local<Value> input = js_stdio_option->Get(env()->input_sym());
+      Local<Value> input = js_stdio_option->Get(env()->input_string());
       if (Buffer::HasInstance(input)) {
         buf = uv_buf_init(Buffer::Data(input),
                           static_cast<unsigned int>(Buffer::Length(input)));
@@ -1049,8 +1049,8 @@ int SyncProcessRunner::ParseStdioOption(int child_fd,
 
     return AddStdioPipe(child_fd, readable, writable, buf);
 
-  } else if (js_type->StrictEquals(env()->inherit_sym())) {
-    int inherit_fd = js_stdio_option->Get(env()->fd_sym())->Int32Value();
+  } else if (js_type->StrictEquals(env()->inherit_string())) {
+    int inherit_fd = js_stdio_option->Get(env()->fd_string())->Int32Value();
     return AddStdioInheritFD(child_fd, inherit_fd);
 
   } else {
